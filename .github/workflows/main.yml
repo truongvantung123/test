@@ -1,0 +1,150 @@
+name: Android 9 (KasmVNC) + Cloudflare URL
+
+permissions:
+  contents: write
+
+on:
+  workflow_dispatch:
+    inputs:
+      device:
+        description: 'Thiết bị mô phỏng'
+        required: false
+        default: 'Nexus S'
+      width:
+        description: 'Chiều rộng màn hình'
+        required: false
+        default: '720'
+      height:
+        description: 'Chiều cao màn hình'
+        required: false
+        default: '1280'
+      memory_mb:
+        description: 'RAM cho emulator (MB)'
+        required: false
+        default: '4096'
+      cores:
+        description: 'Số CPU cores'
+        required: false
+        default: '4'
+
+env:
+  IMAGE_NAME: tuan/android9-kasmvnc:latest
+  CONTAINER_NAME: android9-kasm
+  KASMVNC_PORT: 6901
+  DEVICE_NAME: ${{ github.event.inputs.device || 'Nexus S' }}
+  SCREEN_WIDTH: ${{ github.event.inputs.width || '720' }}
+  SCREEN_HEIGHT: ${{ github.event.inputs.height || '1280' }}
+  RAM_MB: ${{ github.event.inputs.memory_mb || '4096' }}
+  CPU_CORES: ${{ github.event.inputs.cores || '4' }}
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      - name: Build Android 9 + KasmVNC Image
+        run: |
+          cat <<'EOF' > Dockerfile
+          FROM ghcr.io/linuxserver/kasmvnc:ubuntu-jammy
+
+          USER root
+          ENV DEBIAN_FRONTEND=noninteractive
+
+          # Cài Android SDK và emulator
+          RUN apt-get update && \
+              apt-get install -y curl unzip openjdk-11-jdk && \
+              mkdir -p /opt/android-sdk && \
+              cd /opt/android-sdk && \
+              curl -o cmdline-tools.zip https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip && \
+              unzip cmdline-tools.zip -d cmdline-tools && rm cmdline-tools.zip && \
+              yes | /opt/android-sdk/cmdline-tools/bin/sdkmanager --sdk_root=/opt/android-sdk "platform-tools" "system-images;android-28;google_apis;x86_64" "emulator" && \
+              yes | /opt/android-sdk/cmdline-tools/bin/sdkmanager --licenses && \
+              echo "no" | /opt/android-sdk/tools/bin/avdmanager create avd -n test -k "system-images;android-28;google_apis;x86_64" -d "Nexus S"
+
+          # Expose KasmVNC port
+          EXPOSE 6901
+
+          CMD bash -c "source /etc/cont-init.d/99-custom_scripts.sh && \
+                       $STARTUPDIR/vnc_startup.sh --wait && \
+                       /opt/android-sdk/emulator/emulator -avd test \
+                         -memory ${RAM_MB} \
+                         -cores ${CPU_CORES} \
+                         -gpu swiftshader_indirect \
+                         -noaudio \
+                         -no-boot-anim \
+                         -no-snapshot \
+                         -netdelay none \
+                         -netspeed full"
+          EOF
+
+          docker build -t ${IMAGE_NAME} .
+
+      - name: Run Android (KasmVNC)
+        run: |
+          docker rm -f ${CONTAINER_NAME} 2>/dev/null || true
+          docker run -d --privileged \
+            --name ${CONTAINER_NAME} \
+            -p ${KASMVNC_PORT}:6901 \
+            ${IMAGE_NAME}
+
+      - name: Wait for KasmVNC to start
+        run: |
+          echo "Waiting for KasmVNC to be ready..."
+          for i in {1..120}; do
+            if curl -fsS http://localhost:${KASMVNC_PORT}/ >/dev/null 2>&1; then
+              echo "KasmVNC is up after $i checks."
+              break
+            fi
+            sleep 3
+          done
+
+      - name: Download Cloudflared (portable)
+        run: |
+          curl -L --retry 5 --retry-delay 2 \
+            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
+            -o cloudflared
+          chmod +x cloudflared
+
+      - name: Start Cloudflare Tunnel → grab URL
+        id: tunnel
+        run: |
+          nohup ./cloudflared tunnel --url http://localhost:${KASMVNC_PORT} --no-autoupdate > tunnel.log 2>&1 &
+          for i in {1..120}; do
+            URL=$(grep -oE 'https://[a-zA-Z0-9-]+\.trycloudflare\.com' tunnel.log | head -1 || true)
+            if [ -n "$URL" ]; then
+              echo "url=$URL" >> $GITHUB_OUTPUT
+              echo "Public URL: $URL"
+              break
+            fi
+            sleep 1
+          done
+          if [ -z "$URL" ]; then
+            echo "Failed to obtain Cloudflare URL"
+            tail -n +1 tunnel.log
+            exit 1
+          fi
+
+      - name: Write remote.txt and commit to repo
+        run: |
+          echo "${{ steps.tunnel.outputs.url }}" > remote.txt
+          git config user.name "github-actions"
+          git config user.email "github-actions@users.noreply.github.com"
+          git add remote.txt
+          git commit -m "update remote.txt (Android 9 KasmVNC URL)" || echo "no changes"
+          git push origin HEAD:${GITHUB_REF_NAME}
+
+      - name: Show URL
+        run: |
+          echo "===================================================="
+          echo "Android 9 (KasmVNC) Public URL:"
+          cat remote.txt | head -1
+          echo "===================================================="
+
+      - name: Keep Alive (6h)
+        run: sleep 21600
