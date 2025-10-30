@@ -1,4 +1,4 @@
-name: Android 9 + KasmVNC VPS (Fixed)
+name: Android 9 + KasmVNC (Cloudflare Tunnel)
 
 on:
   workflow_dispatch:
@@ -6,22 +6,23 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 360
 
     env:
-      IMAGE_NAME: android9-kasm-fixed
-      CONTAINER_NAME: android-vnc
+      IMAGE_NAME: android9-kasm-final
+      CONTAINER_NAME: android9-kasm
       RAM_MB: 4096
       CPU_CORES: 4
       PORT: 6901
 
     steps:
-      - name: 🧰 Checkout repository
+      - name: 🧩 Checkout repository
         uses: actions/checkout@v4
 
       - name: 🐳 Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: 🧩 Build Android + KasmVNC image (fixed path)
+      - name: 🧱 Build Android + KasmVNC image
         run: |
           cat <<'EOF' > Dockerfile
           FROM kasmweb/core-ubuntu-focal:1.14.0
@@ -57,7 +58,7 @@ jobs:
 
           docker build -t $IMAGE_NAME .
 
-      - name: 🚀 Run container (KasmVNC + Android)
+      - name: 🚀 Run Android (KasmVNC)
         run: |
           docker run -d \
             --name $CONTAINER_NAME \
@@ -67,16 +68,46 @@ jobs:
             -e DISPLAY_HEIGHT=720 \
             $IMAGE_NAME
 
-      - name: ⏳ Wait for emulator
+      - name: ⏳ Wait for emulator startup
         run: |
-          echo "Waiting for Android emulator startup..."
-          sleep 45
-          docker logs $CONTAINER_NAME
+          echo "Waiting Android emulator boot..."
+          sleep 60
+          docker logs $CONTAINER_NAME --tail 40
 
-      - name: 🌐 Info
+      - name: 🌩️ Download Cloudflared
         run: |
-          echo "==========================================="
-          echo "✅ Android 9 + KasmVNC đã khởi chạy!"
-          echo "Truy cập tại: http://127.0.0.1:6901"
-          echo "Mật khẩu VNC: 123456"
-          echo "==========================================="
+          curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
+          chmod +x cloudflared
+
+      - name: 🌐 Start Cloudflare Tunnel
+        id: tunnel
+        run: |
+          nohup ./cloudflared tunnel --url http://localhost:${PORT} --no-autoupdate > tunnel.log 2>&1 &
+          for i in {1..120}; do
+            URL=$(grep -oE 'https://[a-zA-Z0-9-]+\.trycloudflare\.com' tunnel.log | head -1 || true)
+            if [ -n "$URL" ]; then
+              echo "url=$URL" >> $GITHUB_OUTPUT
+              echo "Public URL: $URL"
+              break
+            fi
+            sleep 1
+          done
+          if [ -z "$URL" ]; then
+            echo "Failed to obtain Cloudflare URL"
+            exit 1
+          fi
+
+      - name: 📄 Save tunnel URL
+        run: |
+          echo "${{ steps.tunnel.outputs.url }}" > remote.txt
+          cat remote.txt
+
+      - name: 🕓 Keep alive (6h)
+        run: sleep 21600
+
+      - name: 🧾 Logs (debug)
+        if: always()
+        run: |
+          echo "=== docker ps -a ==="; docker ps -a
+          echo "=== docker logs (last 100 lines) ==="; docker logs --tail 100 $CONTAINER_NAME || true
+          echo "=== tunnel.log ==="; tail -n 40 tunnel.log || true
