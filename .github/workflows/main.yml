@@ -1,4 +1,4 @@
-name: Android 9 + KasmVNC (Cloudflare Tunnel)
+name: Android 9 + KasmVNC (Fixed Build + Cloudflare)
 
 on:
   workflow_dispatch:
@@ -9,11 +9,11 @@ jobs:
     timeout-minutes: 360
 
     env:
-      IMAGE_NAME: android9-kasm-final
-      CONTAINER_NAME: android9-kasm
+      IMAGE_NAME: android9-kasmvnc-final
+      CONTAINER_NAME: android9
+      PORT: 6901
       RAM_MB: 4096
       CPU_CORES: 4
-      PORT: 6901
 
     steps:
       - name: 🧩 Checkout repository
@@ -22,7 +22,7 @@ jobs:
       - name: 🐳 Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: 🧱 Build Android + KasmVNC image
+      - name: 🧱 Build Android 9 + KasmVNC image
         run: |
           cat <<'EOF' > Dockerfile
           FROM kasmweb/core-ubuntu-focal:1.14.0
@@ -31,15 +31,15 @@ jobs:
           ENV DEBIAN_FRONTEND=noninteractive
           ENV ANDROID_SDK_ROOT=/opt/android-sdk
 
-          RUN apt-get update && apt-get install -y curl unzip openjdk-11-jdk && \
+          RUN apt-get update && apt-get install -y curl unzip openjdk-11-jdk qemu-kvm libvirt-daemon-system libvirt-clients bridge-utils && \
               mkdir -p $ANDROID_SDK_ROOT && cd $ANDROID_SDK_ROOT && \
               curl -o cmdline-tools.zip https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip && \
-              unzip cmdline-tools.zip -d cmdline-tools && rm cmdline-tools.zip && \
+              mkdir -p cmdline-tools && unzip cmdline-tools.zip -d cmdline-tools && rm cmdline-tools.zip && \
               mkdir -p $ANDROID_SDK_ROOT/cmdline-tools/latest && \
               mv $ANDROID_SDK_ROOT/cmdline-tools/* $ANDROID_SDK_ROOT/cmdline-tools/latest/ || true && \
-              yes | $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager --sdk_root=$ANDROID_SDK_ROOT "platform-tools" "system-images;android-28;google_apis;x86_64" "emulator" && \
+              yes | $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager --sdk_root=$ANDROID_SDK_ROOT "platform-tools" "emulator" "system-images;android-28;google_apis;x86_64" && \
               yes | $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager --licenses && \
-              echo "no" | $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/avdmanager create avd -n test -k "system-images;android-28;google_apis;x86_64" -d "Nexus S"
+              echo "no" | $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/avdmanager create avd -n test -k "system-images;android-28;google_apis;x86_64" -d "pixel"
 
           EXPOSE 6901
 
@@ -52,13 +52,14 @@ jobs:
                          -noaudio \
                          -no-boot-anim \
                          -no-snapshot \
+                         -accel off \
                          -netdelay none \
                          -netspeed full"
           EOF
 
-          docker build -t $IMAGE_NAME .
+          docker build --no-cache -t $IMAGE_NAME .
 
-      - name: 🚀 Run Android (KasmVNC)
+      - name: 🚀 Run Android container
         run: |
           docker run -d \
             --name $CONTAINER_NAME \
@@ -68,18 +69,12 @@ jobs:
             -e DISPLAY_HEIGHT=720 \
             $IMAGE_NAME
 
-      - name: ⏳ Wait for emulator startup
-        run: |
-          echo "Waiting Android emulator boot..."
-          sleep 60
-          docker logs $CONTAINER_NAME --tail 40
-
-      - name: 🌩️ Download Cloudflared
+      - name: 🌐 Download Cloudflared
         run: |
           curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
           chmod +x cloudflared
 
-      - name: 🌐 Start Cloudflare Tunnel
+      - name: ☁️ Start Cloudflare Tunnel
         id: tunnel
         run: |
           nohup ./cloudflared tunnel --url http://localhost:${PORT} --no-autoupdate > tunnel.log 2>&1 &
@@ -97,17 +92,13 @@ jobs:
             exit 1
           fi
 
-      - name: 📄 Save tunnel URL
+      - name: 🔗 Show public URL
         run: |
-          echo "${{ steps.tunnel.outputs.url }}" > remote.txt
-          cat remote.txt
+          echo "======================================"
+          echo "Truy cập Android 9 tại:"
+          echo "${{ steps.tunnel.outputs.url }}"
+          echo "Mật khẩu VNC: 123456"
+          echo "======================================"
 
-      - name: 🕓 Keep alive (6h)
+      - name: 🕓 Keep Alive (6h)
         run: sleep 21600
-
-      - name: 🧾 Logs (debug)
-        if: always()
-        run: |
-          echo "=== docker ps -a ==="; docker ps -a
-          echo "=== docker logs (last 100 lines) ==="; docker logs --tail 100 $CONTAINER_NAME || true
-          echo "=== tunnel.log ==="; tail -n 40 tunnel.log || true
