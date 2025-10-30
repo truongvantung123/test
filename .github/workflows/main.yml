@@ -1,4 +1,4 @@
-name: Android 9 + KasmVNC VPS
+name: Android 9 + KasmVNC VPS (Fixed)
 
 on:
   workflow_dispatch:
@@ -8,7 +8,7 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      IMAGE_NAME: android9-kasm
+      IMAGE_NAME: android9-kasm-fixed
       CONTAINER_NAME: android-vnc
       RAM_MB: 4096
       CPU_CORES: 4
@@ -21,29 +21,27 @@ jobs:
       - name: 🐳 Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: 🧩 Build Android + KasmVNC image
+      - name: 🧩 Build Android + KasmVNC image (fixed path)
         run: |
           cat <<'EOF' > Dockerfile
           FROM kasmweb/core-ubuntu-focal:1.14.0
 
           USER root
           ENV DEBIAN_FRONTEND=noninteractive
+          ENV ANDROID_SDK_ROOT=/opt/android-sdk
 
-          # Cài Android SDK + emulator
-          RUN apt-get update && \
-              apt-get install -y curl unzip openjdk-11-jdk && \
-              mkdir -p /opt/android-sdk && \
-              cd /opt/android-sdk && \
+          RUN apt-get update && apt-get install -y curl unzip openjdk-11-jdk && \
+              mkdir -p $ANDROID_SDK_ROOT && cd $ANDROID_SDK_ROOT && \
               curl -o cmdline-tools.zip https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip && \
               unzip cmdline-tools.zip -d cmdline-tools && rm cmdline-tools.zip && \
-              yes | /opt/android-sdk/cmdline-tools/bin/sdkmanager --sdk_root=/opt/android-sdk "platform-tools" "system-images;android-28;google_apis;x86_64" "emulator" && \
-              yes | /opt/android-sdk/cmdline-tools/bin/sdkmanager --licenses && \
-              echo "no" | /opt/android-sdk/tools/bin/avdmanager create avd -n test -k "system-images;android-28;google_apis;x86_64" -d "Nexus S"
+              mkdir -p $ANDROID_SDK_ROOT/cmdline-tools/latest && \
+              mv $ANDROID_SDK_ROOT/cmdline-tools/* $ANDROID_SDK_ROOT/cmdline-tools/latest/ || true && \
+              yes | $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager --sdk_root=$ANDROID_SDK_ROOT "platform-tools" "system-images;android-28;google_apis;x86_64" "emulator" && \
+              yes | $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager --licenses && \
+              echo "no" | $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/avdmanager create avd -n test -k "system-images;android-28;google_apis;x86_64" -d "Nexus S"
 
-          # Expose cổng KasmVNC
           EXPOSE 6901
 
-          # Chạy KasmVNC + Emulator
           CMD bash -c "/usr/bin/start-kasmvnc --skip-cert-check & \
                        sleep 10 && \
                        /opt/android-sdk/emulator/emulator -avd test \
@@ -69,17 +67,16 @@ jobs:
             -e DISPLAY_HEIGHT=720 \
             $IMAGE_NAME
 
-      - name: ⏳ Wait for emulator to start
+      - name: ⏳ Wait for emulator
         run: |
-          echo "Waiting for Android emulator..."
+          echo "Waiting for Android emulator startup..."
           sleep 45
           docker logs $CONTAINER_NAME
 
-      - name: 🌐 Show access info
+      - name: 🌐 Info
         run: |
-          echo "============================================"
-          echo "✅ Android 9 + KasmVNC đã khởi chạy thành công!"
-          echo "Truy cập KasmVNC UI tại:"
-          echo "🔗 http://127.0.0.1:6901"
-          echo "🔑 Mật khẩu: 123456"
-          echo "============================================"
+          echo "==========================================="
+          echo "✅ Android 9 + KasmVNC đã khởi chạy!"
+          echo "Truy cập tại: http://127.0.0.1:6901"
+          echo "Mật khẩu VNC: 123456"
+          echo "==========================================="
